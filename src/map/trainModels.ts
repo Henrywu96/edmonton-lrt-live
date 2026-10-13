@@ -433,10 +433,13 @@ export type PartName =
   | 'roof'
   | 'equip'
   | 'panto'
-  | 'ghost';
-export const PARTS: PartName[] = ['blob', 'under', 'cabBody', 'midA', 'midB', 'roof', 'equip', 'panto', 'ghost'];
-/** parts coloured per instance (roof: real colour blended with the line colour when zoomed out; ghost: line colour) */
-export const TINTED = new Set<PartName>(['roof', 'ghost']);
+  | 'ghostCab'
+  | 'ghostMidA'
+  | 'ghostMidB';
+export const PARTS: PartName[] = ['blob', 'under', 'cabBody', 'midA', 'midB', 'roof', 'equip', 'panto', 'ghostCab', 'ghostMidA', 'ghostMidB'];
+/** parts coloured per instance (roof: real colour blended with the line colour when zoomed out; ghosts: a hint of it) */
+export const TINTED = new Set<PartName>(['roof', 'ghostCab', 'ghostMidA', 'ghostMidB']);
+const GHOSTS = new Set<PartName>(['ghostCab', 'ghostMidA', 'ghostMidB']);
 
 export interface Fleet {
   m: ModelSpec;
@@ -452,7 +455,6 @@ export interface FleetMaterials {
   equip: MeshLambertMaterial;
   panto: MeshLambertMaterial;
   blob: MeshBasicMaterial;
-  ghost: MeshBasicMaterial;
   /** textured sides, per model and role (lit windows at night use emissive) */
   sides: MeshLambertMaterial[];
 }
@@ -466,7 +468,6 @@ export function makeMaterials(): FleetMaterials {
     equip: new MeshLambertMaterial({ color: '#b8bec6' }),
     panto: new MeshLambertMaterial({ color: '#3a3f47' }),
     blob: new MeshBasicMaterial({ map: shadowTexture(), color: '#000000', transparent: true, opacity: 0.42, depthWrite: false }),
-    ghost: new MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.55, depthTest: false, depthWrite: false }),
     sides: [],
   };
 }
@@ -479,6 +480,16 @@ function sideMaterial(mats: FleetMaterials, p: Painted, repeatU = 1, repeatV = 1
   const mat = new MeshLambertMaterial({ map: p.map, emissive: new Color('#ffd9a0'), emissiveMap: p.glow, emissiveIntensity: 0 });
   mats.sides.push(mat);
   return mat;
+}
+
+/** a see-through copy of a painted body material for trains in tunnel (lit windows still glow at night) */
+function ghostOf(mats: FleetMaterials, base: MeshLambertMaterial): MeshLambertMaterial {
+  const g = base.clone();
+  g.transparent = true;
+  g.opacity = 0.5;
+  g.depthWrite = false;
+  mats.sides.push(g);
+  return g;
 }
 
 const MAX_BODIES = 900;
@@ -507,7 +518,10 @@ export function makeFleet(key: ModelKey, mats: FleetMaterials): Fleet {
     roof: box(L * 0.9, 0.1, m.w * 0.56),
     equip: box(2.4, 0.38, m.w * 0.55),
     panto: pantoGeometry(),
-    ghost: box(L + m.art, (m.h + m.bottom) * 1.05, m.w * 1.45),
+    // underground: the same rounded bodies, see-through
+    ghostCab: cab,
+    ghostMidA: mid,
+    ghostMidB: mid,
   };
   const mat: Record<PartName, Material | Material[]> = {
     blob: mats.blob,
@@ -518,7 +532,9 @@ export function makeFleet(key: ModelKey, mats: FleetMaterials): Fleet {
     roof: mats.roof,
     equip: mats.equip,
     panto: mats.panto,
-    ghost: mats.ghost,
+    ghostCab: ghostOf(mats, cabSide),
+    ghostMidA: ghostOf(mats, midA),
+    ghostMidB: ghostOf(mats, midB),
   };
   if (key !== 'flexity') {
     // the U2 and SD160 have no separate middle sections
@@ -531,7 +547,7 @@ export function makeFleet(key: ModelKey, mats: FleetMaterials): Fleet {
     im.frustumCulled = false;
     im.count = 0;
     if (TINTED.has(name)) im.setColorAt(0, white); // create the colour buffer up front (no shader rebuild later)
-    im.renderOrder = name === 'ghost' ? 10 : name === 'blob' ? 1 : 2;
+    im.renderOrder = GHOSTS.has(name) ? 10 : name === 'blob' ? 1 : 2;
     parts[name] = im;
   }
   const T = (x: number, y: number, z: number, rotY = 0) => new Matrix4().makeRotationY(rotY).setPosition(x, y, z);
@@ -548,7 +564,6 @@ export function makeFleet(key: ModelKey, mats: FleetMaterials): Fleet {
     equip: T(L * 0.12, roofY + 0.2, 0),
     panto: T(-L * 0.2, roofY + 0.06, 0),
     under: T(0, b / 2, 0),
-    ghost: T(0, (b + m.h) * 0.5, 0),
     blob: T(0, 0.04, 0),
   };
   return { m, parts, local };

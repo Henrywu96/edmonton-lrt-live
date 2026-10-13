@@ -206,6 +206,32 @@ function simplify(pts, tol) {
   return pts.filter((_, i) => keep[i]);
 }
 
+/**
+ * Removes back-and-forth spikes: a vertex where the line turns by more than 150° is a point out of
+ * sequence (ETS's northbound shapes double back for ~220 m near Bay/Enterprise Square, which made
+ * trains run backwards there). Repeated until the line only goes forwards.
+ */
+function despike(pts) {
+  const P = pts.slice();
+  let i = 1;
+  while (i < P.length - 1) {
+    const a = xy(P[i - 1][0], P[i - 1][1]);
+    const b = xy(P[i][0], P[i][1]);
+    const c = xy(P[i + 1][0], P[i + 1][1]);
+    const ux = b[0] - a[0];
+    const uy = b[1] - a[1];
+    const vx = c[0] - b[0];
+    const vy = c[1] - b[1];
+    const lu = Math.hypot(ux, uy);
+    const lv = Math.hypot(vx, vy);
+    if (lu < 1e-6 || lv < 1e-6 || (ux * vx + uy * vy) / (lu * lv) < -0.866) {
+      P.splice(i, 1);
+      i = Math.max(1, i - 1);
+    } else i++;
+  }
+  return P;
+}
+
 /** Positions of stops along a shape, in order: vertex index + fraction, never going backwards. */
 function projectStops(shape, stops) {
   const out = [];
@@ -262,6 +288,16 @@ function cleanName(name) {
     .replace(/\s+platform\s*\w*$/i, '')
     .trim();
   return n || name.trim();
+}
+/** "Nait Blatchford Market" → the station's own spelling; "Gov'T Centre" → "Gov't Centre"; not-in-service runs flagged */
+function tidyHeadsign(raw, lastStation) {
+  if (!raw) return lastStation;
+  if (/not\s+in\s+service/i.test(raw)) return 'Not in service';
+  const h = cleanName(raw);
+  const a = normName(h);
+  const b = normName(lastStation);
+  if (a && b && (a === b || b.startsWith(a + ' ') || a.startsWith(b + ' '))) return lastStation;
+  return h.replace(/'([A-Z])\b/g, (_m, c) => `'${c.toLowerCase()}`);
 }
 const normName = (n) => cleanName(n).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'line';
@@ -320,10 +356,17 @@ function tidyTimes(A, D, dist) {
       }
     }
   }
-  // never run backwards, always leave at least 20 s between stops
+  // never run backwards, and no faster than a believable average (~58 km/h between stops): a link that
+  // minute-rounded times squeeze too short borrows the time from slower links after it
+  let debt = 0;
   for (let k = 1; k < n; k++) {
-    arr[k] = Math.max(arr[k], dep[k - 1] + 20);
-    dep[k] = Math.max(dep[k], arr[k]);
+    const dwell = Math.max(0, dep[k] - arr[k]);
+    const planned = arr[k] - dep[k - 1];
+    const need = Math.max(20, (dist[k] - dist[k - 1]) / 16 + 8);
+    const run = Math.max(need, planned - debt);
+    debt += run - planned;
+    arr[k] = dep[k - 1] + run;
+    dep[k] = arr[k] + dwell;
   }
   return { arr: arr.map(Math.round), dep: dep.map(Math.round) };
 }
@@ -390,7 +433,14 @@ async function build(zip, source) {
   await eachRow(zip, 'stop_times.txt', (c, col) => {
     const t = trips.get(cell(c, col('trip_id')));
     if (!t) return;
-    t.stops.push({ seq: Number(cell(c, col('stop_sequence'))), stop: cell(c, col('stop_id')), arr: parseTime(cell(c, col('arrival_time'))), dep: parseTime(cell(c, col('departure_time'))) });
+    t.stops.push({
+      seq: Number(cell(c, col('stop_sequence'))),
+      stop: cell(c, col('stop_id')),
+      arr: parseTime(cell(c, col('arrival_time'))),
+      dep: parseTime(cell(c, col('departure_time'))),
+      // pickup 1 + drop-off 1 = no passengers here (yard platforms, tail tracks used as timing points)
+      noPax: cell(c, col('pickup_type')) === '1' && cell(c, col('drop_off_type')) === '1',
+    });
   });
 
   // frequency-based trips are expanded into individual runs
@@ -421,6 +471,8 @@ async function build(zip, source) {
   for (const [id, t] of trips) {
     t.stops.sort((a, b) => a.seq - b.seq);
     t.stops = t.stops.filter((s) => stops.has(s.stop));
+    const pax = t.stops.filter((s) => !s.noPax);
+    if (pax.length >= 2) t.stops = pax;
     if (t.stops.length < 2) trips.delete(id);
   }
   if (!trips.size) throw new Error('The rail routes have no trips with stop times');
@@ -489,10 +541,20 @@ async function build(zip, source) {
     if (idx === undefined) {
       idx = stations.length;
       stationIndex.set(key, idx);
-      stations.push({ id: parent ? parent.id : s.id, name: cleanName((parent ?? s).name), parent, members: new Map(), lines: new Set() });
+      stations.push({ id: parent ? parent.id : s.id, name: cleanName((parent ?? s).name), parent, members: new Map(), lines: new Set(), names: new Map() });
     }
     stations[idx].members.set(s.id, s);
+    const nm = cleanName(s.name);
+    stations[idx].names.set(nm, (stations[idx].names.get(nm) ?? 0) + 1);
     return idx;
+  };
+
+  const stationName = (i) => {
+    const st = stations[i];
+    let best = st.name;
+    let n = -1;
+    for (const [name, count] of st.names) if (count > n) [best, n] = [name, count];
+    return best;
   };
 
   // shapes in use
@@ -516,7 +578,7 @@ async function build(zip, source) {
       if (!q || Math.abs(q[0] - p[0]) > 1e-7 || Math.abs(q[1] - p[1]) > 1e-7) pts.push(p);
     }
     if (pts.length < 2) return -1;
-    const simple = simplify(pts, 0.6);
+    const simple = simplify(despike(pts), 0.6);
     const idx = shapes.length;
     shapes.push({ id, line, coords: simple.flatMap(([lon, lat]) => [+lon.toFixed(6), +lat.toFixed(6)]) });
     const P = simple.map(([lon, lat]) => xy(+lon.toFixed(6), +lat.toFixed(6)));
@@ -582,7 +644,7 @@ async function build(zip, source) {
         continue;
       }
     }
-    const headsign = t.headsign ? cleanName(t.headsign) : stations[st[st.length - 1]].name;
+    const headsign = tidyHeadsign(t.headsign, stationName(st[st.length - 1]));
     const pkey = `${line}|${si}|${t.stops.map((s) => s.stop).join(',')}|${headsign}`;
     let pi = patternIndex.get(pkey);
     if (pi === undefined) {
@@ -653,7 +715,7 @@ async function build(zip, source) {
       const pts = s.parent && Number.isFinite(s.parent.lat) && s.parent.lat !== 0 ? [s.parent] : [...s.members.values()];
       return {
         id: s.id,
-        name: s.name,
+        name: stationName(stations.indexOf(s)),
         lon: +(pts.reduce((a, p) => a + p.lon, 0) / pts.length).toFixed(6),
         lat: +(pts.reduce((a, p) => a + p.lat, 0) / pts.length).toFixed(6),
         lines: [...s.lines].sort((a, b) => order(a) - order(b)),

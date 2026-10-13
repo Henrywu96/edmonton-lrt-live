@@ -26,9 +26,9 @@ export const LINE_STOCK: Record<string, StockFamily> = { capital: 'highfloor', m
  */
 export const UNDERGROUND = {
   lines: ['capital', 'metro'],
-  stations: ['churchill', 'central', 'bay', 'corona', 'government centre', 'university', 'health sciences'],
+  stations: ['churchill', 'central', 'bay', 'corona', 'government', 'university', 'health sciences'],
   /** [station, station, from, to]: the part of that link (as a fraction, either direction) that is above ground */
-  open: [['government centre', 'university', 0.3, 0.8]] as [string, string, number, number][],
+  open: [['government', 'university', 0.3, 0.8]] as [string, string, number, number][],
 };
 
 /** Capital and Metro share the downtown tunnel; their route lines are drawn side by side there */

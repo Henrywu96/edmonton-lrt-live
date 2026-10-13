@@ -148,6 +148,31 @@ export class Schedule {
     this.rangeEnd = b;
   }
 
+  private typical: Map<number, string> | null = null;
+
+  /**
+   * A holiday or special day runs a different set of services from the usual one for that weekday.
+   * (Feeds like ETS's list every date explicitly, so "added on this date" alone says nothing.)
+   */
+  private isSpecial(key: string, active: Set<number>): boolean {
+    if (!this.typical) {
+      const counts = new Map<number, Map<string, number>>();
+      for (let k = this.rangeStart, i = 0; k <= this.rangeEnd && i < 800; k = addDays(k, 1), i++) {
+        const sig = [...this.activeServices(k)].sort((a, b) => a - b).join(',');
+        if (!sig) continue;
+        const wd = weekdayOf(k);
+        const m = counts.get(wd) ?? new Map<string, number>();
+        m.set(sig, (m.get(sig) ?? 0) + 1);
+        counts.set(wd, m);
+      }
+      this.typical = new Map();
+      for (const [wd, m] of counts) this.typical.set(wd, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+    }
+    const sig = [...active].sort((a, b) => a - b).join(',');
+    const usual = this.typical.get(weekdayOf(key));
+    return !!sig && usual !== undefined && sig !== usual;
+  }
+
   /** indexes of the services running on a date */
   activeServices(key: string): Set<number> {
     const col = (weekdayOf(key) + 6) % 7; // GTFS days start on Monday
@@ -196,11 +221,7 @@ export class Schedule {
         }
       }
     }
-    const col = (weekdayOf(serviceKey) + 6) % 7;
-    const special = [...active].some((i) => {
-      const s = this.data.services[i];
-      return s.add.includes(serviceKey) && !(s.days[col] === '1' && s.start <= serviceKey && serviceKey <= s.end);
-    });
+    const special = this.isSpecial(serviceKey, active);
 
     const plan: DayPlan = {
       key,
@@ -452,7 +473,7 @@ export class Schedule {
       for (const idx of stations) {
         for (const e of plan.events.get(idx) ?? []) {
           const p = e.trip.pattern;
-          if (e.k === p.stations.length - 1 || e.dep < t - 10) continue;
+          if (e.k === p.stations.length - 1 || e.dep < t - 10 || p.headsign === 'Not in service') continue;
           const gk = `${p.line.id}|${p.headsign}`;
           let g = groups.get(gk);
           if (!g) groups.set(gk, (g = { line: p.line, headsign: p.headsign, items: [] }));

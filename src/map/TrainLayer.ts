@@ -58,6 +58,7 @@ export class TrainLayer implements CustomLayerInterface {
   private fleets: Partial<Record<ModelKey, Fleet>> = {};
   private readonly lineColor = new Color();
   private readonly roofColor = new Color();
+  private readonly ghostColor = new Color();
   private readonly realRoof = new Color('#e4e7ea');
   private halo: Mesh | null = null;
   private readonly base = new Matrix4();
@@ -187,7 +188,10 @@ export class TrainLayer implements CustomLayerInterface {
       const front = st.dist + total / 2;
       // roofs keep their real colour close up and take on the line colour as the trains grow into tokens
       this.lineColor.set(line.color);
-      this.roofColor.copy(this.realRoof).lerp(this.lineColor, Math.min(0.85, Math.max(0, (sw - 1.4) / 2.5)));
+      const toy = Math.min(1, Math.max(0, (sw - 1.4) / 2.5));
+      this.roofColor.copy(this.realRoof).lerp(this.lineColor, 0.85 * toy);
+      // trains in tunnel: faint line colour close up, stronger when zoomed out so the line stays readable
+      this.ghostColor.setRGB(1, 1, 1).lerp(this.lineColor, 0.4 + 0.4 * toy);
       let cx = 0;
       let cy = 0;
       let nx = 0;
@@ -273,13 +277,15 @@ export class TrainLayer implements CustomLayerInterface {
   }
 
   private addSection(fleet: Fleet, sec: SectionSpec, ug: boolean) {
+    const cab = sec.role === 'cabF' || sec.role === 'cabR';
     if (ug) {
-      this.add(fleet, 'ghost', 'ghost', this.lineColor);
+      // in tunnel: only the see-through body, faintly tinted with the line colour
+      if (cab) this.add(fleet, 'ghostCab', sec.role === 'cabF' ? 'cabF' : 'cabR', this.ghostColor);
+      else this.add(fleet, sec.role === 'midA' ? 'ghostMidA' : 'ghostMidB', 'mid', this.ghostColor);
       return;
     }
     this.add(fleet, 'blob', 'blob');
     this.add(fleet, 'under', 'under');
-    const cab = sec.role === 'cabF' || sec.role === 'cabR';
     if (cab) {
       const f = sec.role === 'cabF';
       this.add(fleet, 'cabBody', f ? 'cabF' : 'cabR');
