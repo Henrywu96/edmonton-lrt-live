@@ -240,18 +240,37 @@ function paint(model: ModelKey, role: Role): Painted {
   return { map: tex(cv), glow: tex(gl) };
 }
 
-function shadowTexture(): CanvasTexture {
+/** how dark the soft shadow under the trains is (0 = no shadow) */
+const SHADOW_OPACITY = 0.26;
+/** shadow size: width as a share of the car body, and how far it fades out at each end (metres) */
+const SHADOW_WIDTH = 1.45;
+const SHADOW_FADE = 3;
+
+/**
+ * A soft contact shadow for one section, as an alpha mask: it fades out smoothly to the sides and linearly
+ * towards both ends. Neighbouring sections overlap by exactly the fade length, so their fades add up to one
+ * even band along the train, and the band itself ends in a soft rounded tip instead of a square corner.
+ */
+function shadowTexture(fadeU: number): CanvasTexture {
+  const W = 128;
+  const H = 32;
   const c = document.createElement('canvas');
-  c.width = 64;
-  c.height = 32;
+  c.width = W;
+  c.height = H;
   const ctx = c.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 0, 0, 32);
-  g.addColorStop(0, 'rgba(0,0,0,0)');
-  g.addColorStop(0.28, 'rgba(0,0,0,1)');
-  g.addColorStop(0.72, 'rgba(0,0,0,1)');
-  g.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 32);
+  const img = ctx.createImageData(W, H);
+  const core = 0.45; // fully dark across the middle 45 % of the width
+  for (let y = 0; y < H; y++) {
+    const d = Math.abs((y + 0.5) / H - 0.5) * 2;
+    const t = Math.min(1, Math.max(0, (1 - d) / (1 - core)));
+    const across = t * t * (3 - 2 * t);
+    for (let x = 0; x < W; x++) {
+      const u = (x + 0.5) / W;
+      const along = Math.min(1, Math.min(u, 1 - u) / fadeU);
+      img.data[(y * W + x) * 4 + 3] = Math.round(255 * along * across);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
   return new CanvasTexture(c);
 }
 
@@ -454,9 +473,10 @@ export interface FleetMaterials {
   roof: MeshLambertMaterial;
   equip: MeshLambertMaterial;
   panto: MeshLambertMaterial;
-  blob: MeshBasicMaterial;
   /** textured sides, per model and role (lit windows at night use emissive) */
   sides: MeshLambertMaterial[];
+  /** soft shadows, one per model (their fade depends on the section length) */
+  shadows: MeshBasicMaterial[];
 }
 
 export function makeMaterials(): FleetMaterials {
@@ -467,8 +487,8 @@ export function makeMaterials(): FleetMaterials {
     roof: new MeshLambertMaterial({ color: '#ffffff' }),
     equip: new MeshLambertMaterial({ color: '#b8bec6' }),
     panto: new MeshLambertMaterial({ color: '#3a3f47' }),
-    blob: new MeshBasicMaterial({ map: shadowTexture(), color: '#000000', transparent: true, opacity: 0.42, depthWrite: false }),
     sides: [],
+    shadows: [],
   };
 }
 
@@ -507,8 +527,19 @@ export function makeFleet(key: ModelKey, mats: FleetMaterials): Fleet {
   const midA = sideMaterial(mats, paint(key, 'midA'));
   const midB = sideMaterial(mats, paint(key, 'midB'));
 
-  const blob = new PlaneGeometry(L + m.art + 0.6, m.w * 2.1);
+  // soft shadow: one section plus the gap to the next, plus the fade that overlaps the neighbour's
+  const shadowLen = L + m.art + SHADOW_FADE;
+  const blob = new PlaneGeometry(shadowLen, m.w * SHADOW_WIDTH);
   blob.rotateX(-Math.PI / 2);
+  const shadow = new MeshBasicMaterial({
+    map: shadowTexture(SHADOW_FADE / shadowLen),
+    color: '#000000',
+    transparent: true,
+    opacity: SHADOW_OPACITY,
+    depthWrite: false,
+    visible: SHADOW_OPACITY > 0,
+  });
+  mats.shadows.push(shadow);
   const geo: Record<PartName, BufferGeometry> = {
     blob,
     under: box(L * 0.8, m.bottom, m.w * 0.84),
@@ -524,7 +555,7 @@ export function makeFleet(key: ModelKey, mats: FleetMaterials): Fleet {
     ghostMidB: mid,
   };
   const mat: Record<PartName, Material | Material[]> = {
-    blob: mats.blob,
+    blob: shadow,
     under: mats.under,
     cabBody: cabSide,
     midA,

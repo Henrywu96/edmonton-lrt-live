@@ -117,8 +117,8 @@ export class TrainLayer implements CustomLayerInterface {
     });
     if (this.halo) (this.halo.material as MeshBasicMaterial).dispose();
     if (this.mats) {
-      const { sides, ...rest } = this.mats;
-      for (const m of [...Object.values(rest), ...sides]) {
+      const { sides, shadows, ...rest } = this.mats;
+      for (const m of [...Object.values(rest), ...sides, ...shadows]) {
         m.map?.dispose();
         if ('emissiveMap' in m) m.emissiveMap?.dispose();
         m.dispose();
