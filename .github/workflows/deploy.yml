@@ -1,0 +1,56 @@
+# Builds the site and publishes it to GitHub Pages.
+# Runs on every push to main, once a day (to pick up timetable changes), and on demand.
+# The ETS GTFS feed is downloaded fresh each time; if that download fails the deploy stops
+# and the site that is already online stays as it was.
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 10 * * *' # every day, about 3–4 am in Edmonton
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Build the timetable from the ETS GTFS feed
+        run: npm run data
+
+      - name: Build the site
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
