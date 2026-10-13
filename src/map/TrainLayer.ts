@@ -13,11 +13,10 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
-import type { StockKey } from '../config';
 import type { LocalFrame, PathPoint } from '../lib/geo';
 import type { Network } from '../lib/network';
 import type { TrainState } from '../lib/schedule';
-import { MAX_FLEET_BODIES, makeFleet, makeMaterials, PARTS, STOCK, trainLength, type Fleet, type FleetMaterials, type PartName } from './trainModels';
+import { consistFor, MAX_FLEET_BODIES, makeFleet, makeMaterials, MODELS, PARTS, type Consist, type Fleet, type FleetMaterials, type ModelKey, type PartName, type SectionSpec } from './trainModels';
 
 export interface TrainPose {
   state: TrainState;
@@ -56,14 +55,16 @@ export class TrainLayer implements CustomLayerInterface {
   private readonly scene = new Scene();
   private readonly camera = new Camera();
   private mats: FleetMaterials | null = null;
-  private fleets: Partial<Record<StockKey, Fleet>> = {};
+  private fleets: Partial<Record<ModelKey, Fleet>> = {};
+  private readonly lineColor = new Color();
+  private readonly roofColor = new Color();
+  private readonly realRoof = new Color('#e4e7ea');
   private halo: Mesh | null = null;
   private readonly base = new Matrix4();
   private readonly tmp = new Matrix4();
   private readonly pm = new Matrix4();
   private readonly bm = new Matrix4();
   private readonly sv = new Vector3();
-  private readonly color = new Color();
   private readonly pa: PathPoint = { x: 0, y: 0, tx: 0, ty: 0 };
   private readonly pb: PathPoint = { x: 0, y: 0, tx: 0, ty: 0 };
 
@@ -89,7 +90,7 @@ export class TrainLayer implements CustomLayerInterface {
     const sun = new DirectionalLight('#ffffff', 1.1);
     sun.position.set(-0.5, 0.45, 0.75);
     this.scene.add(hemi, sun);
-    for (const key of Object.keys(STOCK) as StockKey[]) {
+    for (const key of Object.keys(MODELS) as ModelKey[]) {
       const f = makeFleet(key, this.mats);
       this.fleets[key] = f;
       for (const name of PARTS) this.scene.add(f.parts[name]);
@@ -114,8 +115,14 @@ export class TrainLayer implements CustomLayerInterface {
       if (o instanceof Mesh) o.geometry.dispose();
     });
     if (this.halo) (this.halo.material as MeshBasicMaterial).dispose();
-    if (this.mats) for (const m of Object.values(this.mats)) m.dispose();
-    this.mats?.blob.map?.dispose();
+    if (this.mats) {
+      const { sides, ...rest } = this.mats;
+      for (const m of [...Object.values(rest), ...sides]) {
+        m.map?.dispose();
+        if ('emissiveMap' in m) m.emissiveMap?.dispose();
+        m.dispose();
+      }
+    }
     this.renderer?.dispose();
     this.renderer = null;
     this.map = null;
@@ -134,8 +141,14 @@ export class TrainLayer implements CustomLayerInterface {
     this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
 
     this.buildInstances(map.getZoom(), performance.now());
-    this.mats.glass.emissiveIntensity = this.night ? 0.9 : 0;
-    this.mats.shell.color.set(this.night ? '#cfd5dc' : '#f4f5f3');
+    // at night the windows light up and the white paint dims a little
+    const glow = this.night ? 0.95 : 0;
+    this.mats.glass.emissiveIntensity = glow * 0.6;
+    for (const m of this.mats.sides) {
+      m.emissiveIntensity = glow;
+      m.color.set(this.night ? '#cfd5dc' : '#ffffff');
+    }
+    this.mats.shell.color.set(this.night ? '#c6ccd3' : '#eef0ee');
 
     renderer.resetState();
     renderer.setViewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
@@ -147,12 +160,11 @@ export class TrainLayer implements CustomLayerInterface {
    * Size multipliers so trains stay legible when zoomed out: never narrower than ~11 px or
    * shorter than ~58 px on screen, true scale once you zoom in past street level.
    */
-  scales(zoom: number, stock: StockKey) {
-    const sp = STOCK[stock];
+  scales(zoom: number, c: Consist) {
     const mpp = this.frame.metersPerPixel(zoom);
     const px = mpp * this.pixelScale;
-    const sw = Math.max(1, (11 * px) / sp.w);
-    const sl = Math.max(1, Math.min(sw * 0.8, (58 * px) / trainLength(sp)));
+    const sw = Math.max(1, (11 * px) / c.model.w);
+    const sl = Math.max(1, Math.min(sw * 0.8, (58 * px) / c.length));
     const sh = Math.max(1, Math.min(sw, (sl + sw) / 2));
     return { sw, sl, sh };
   }
@@ -164,16 +176,18 @@ export class TrainLayer implements CustomLayerInterface {
     const states = this.source();
     for (const st of states) {
       const line = st.v.line;
-      const fleet = this.fleets[line.stock]!;
-      const sp = fleet.sp;
-      const { sw, sl, sh } = this.scales(zoom, line.stock);
+      const c = consistFor(line.stock, line.id, st.v.id);
+      const fleet = this.fleets[c.model.key]!;
+      const m = c.model;
+      const { sw, sl, sh } = this.scales(zoom, c);
       const shape = st.trip.pattern.shape;
       const path = shape.path;
-      const bodyLen = sp.len * sl;
-      const gap = sp.gap * sl;
-      const total = sp.bodies * bodyLen + (sp.bodies - 1) * gap;
-      const side = (sp.w * sw) / 2 + 0.35 * sw; // right-hand running: keep to the right of the track centre
+      const total = c.length * sl;
+      const side = (m.w * sw) / 2 + 0.6 * sw; // right-hand running: keep to the right of the track centre
       const front = st.dist + total / 2;
+      // roofs keep their real colour close up and take on the line colour as the trains grow into tokens
+      this.lineColor.set(line.color);
+      this.roofColor.copy(this.realRoof).lerp(this.lineColor, Math.min(0.85, Math.max(0, (sw - 1.4) / 2.5)));
       let cx = 0;
       let cy = 0;
       let nx = 0;
@@ -181,11 +195,11 @@ export class TrainLayer implements CustomLayerInterface {
       let tx = 0;
       let ty = 0;
       let ugAll = true;
-      this.color.set(line.color);
-      for (let b = 0; b < sp.bodies; b++) {
-        const f = front - b * (bodyLen + gap);
-        path.at(f - 0.7 * sl, this.pa);
-        path.at(f - bodyLen + 0.7 * sl, this.pb);
+      c.sections.forEach((sec, b) => {
+        const centre = front - sec.off * sl;
+        const half = (sec.len / 2) * sl;
+        path.at(centre + half - 0.5 * sl, this.pa);
+        path.at(centre - half + 0.5 * sl, this.pb);
         const ax = this.pa.x + this.pa.ty * side;
         const ay = this.pa.y - this.pa.tx * side;
         const bx = this.pb.x + this.pb.ty * side;
@@ -205,7 +219,7 @@ export class TrainLayer implements CustomLayerInterface {
         }
         tx = bx;
         ty = by;
-        // body frame: X forward, Y up, Z right (= forward × up)
+        // section frame: X forward, Y up, Z right (= forward × up)
         const e = this.bm.elements;
         e[0] = fx * sl;
         e[1] = fy * sl;
@@ -223,14 +237,14 @@ export class TrainLayer implements CustomLayerInterface {
         e[13] = y;
         e[14] = 0;
         e[15] = 1;
-        const ug = this.net.isUnderground(shape, f - bodyLen / 2);
+        const ug = this.net.isUnderground(shape, centre);
         if (!ug) ugAll = false;
-        const role = b === 0 ? 0 : b === sp.bodies - 1 ? 2 : 1;
-        this.addBody(fleet, role, ug);
-      }
-      cx /= sp.bodies;
-      cy /= sp.bodies;
-      this.poses.push({ state: st, x: cx, y: cy, fx: nx, fy: ny, rx: tx, ry: ty, h: (sp.bottom + sp.h) * sh, ug: ugAll });
+        this.addSection(fleet, sec, ug);
+      });
+      const n = c.sections.length;
+      cx /= n;
+      cy /= n;
+      this.poses.push({ state: st, x: cx, y: cy, fx: nx, fy: ny, rx: tx, ry: ty, h: (m.bottom + m.h + 0.5) * sh, ug: ugAll });
       if (st.v.key === this.selectedKey && this.halo) {
         const r = total / 2 + 5 * sw;
         const pulse = 1 + 0.06 * Math.sin(now / 260);
@@ -249,27 +263,32 @@ export class TrainLayer implements CustomLayerInterface {
     }
   }
 
-  private add(fleet: Fleet, name: PartName, local: string, tint: boolean) {
+  private add(fleet: Fleet, name: PartName, local: string, tint?: Color) {
     const im = fleet.parts[name];
     if (im.count >= MAX_FLEET_BODIES) return;
     this.pm.multiplyMatrices(this.bm, fleet.local[local]);
     const i = im.count++;
     im.setMatrixAt(i, this.pm);
-    if (tint) im.setColorAt(i, this.color);
+    if (tint) im.setColorAt(i, tint);
   }
 
-  /** role: 0 front car, 1 middle, 2 rear car */
-  private addBody(fleet: Fleet, role: number, ug: boolean) {
+  private addSection(fleet: Fleet, sec: SectionSpec, ug: boolean) {
     if (ug) {
-      this.add(fleet, 'ghost', 'ghost', true);
+      this.add(fleet, 'ghost', 'ghost', this.lineColor);
       return;
     }
-    this.add(fleet, 'blob', 'blob', false);
-    this.add(fleet, 'under', 'under', false);
-    if (role === 1) this.add(fleet, 'mid', 'mid', false);
-    else this.add(fleet, 'cab', role === 0 ? 'cabF' : 'cabR', false);
-    this.add(fleet, 'glass', role === 0 ? 'glassF' : role === 2 ? 'glassR' : 'glassM', false);
-    this.add(fleet, 'side', 'side', true);
-    this.add(fleet, 'roof', 'roof', true);
+    this.add(fleet, 'blob', 'blob');
+    this.add(fleet, 'under', 'under');
+    const cab = sec.role === 'cabF' || sec.role === 'cabR';
+    if (cab) {
+      const f = sec.role === 'cabF';
+      this.add(fleet, 'cabBody', f ? 'cabF' : 'cabR');
+      this.add(fleet, 'roof', f ? 'roofF' : 'roofR', this.roofColor);
+    } else {
+      this.add(fleet, sec.role === 'midA' ? 'midA' : 'midB', 'mid');
+      this.add(fleet, 'roof', 'roofMid', this.roofColor);
+    }
+    this.add(fleet, 'equip', 'equip');
+    if (sec.panto) this.add(fleet, 'panto', 'panto');
   }
 }

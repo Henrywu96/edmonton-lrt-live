@@ -94,7 +94,7 @@ src/
   lib/geo.ts                   local metric frame matching MapLibre's Mercator, resampled paths
   lib/time.ts, clock.ts, sun.ts  Edmonton time, simulation clock, sunrise/sunset
   map/TrainLayer.ts            three.js custom layer
-  map/trainModels.ts           toy train geometry (Siemens high-floor cars, Flexity low-floor)
+  map/trainModels.ts           train models in real ETS liveries (Siemens U2 / SD160, Flexity Freedom)
   map/TrainLabels.ts           name tags above the trains
   map/layers.ts                route, station and label layers
   components/                  TopBar, LinePanel, Inspector, Toolbar, keyboard shortcuts

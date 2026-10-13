@@ -12,7 +12,7 @@ import { addDays, hm, hms, keyLabel, untilLabel, weekdayOf, WEEKDAYS, Zone } fro
 import { addNetworkLayers, addStationLabels, blankStyle, ROUTE_LAYERS, routeFilter, withoutBuildings } from './map/layers';
 import { TrainLabels } from './map/TrainLabels';
 import { TrainLayer } from './map/TrainLayer';
-import { STOCK } from './map/trainModels';
+import { consistFor } from './map/trainModels';
 import type { LrtData } from './types';
 
 /* ------------------------------------------------------------------ what the React UI sees */
@@ -196,6 +196,10 @@ export class Engine {
     map.on('mousemove', (ev) => this.onHover(ev));
     map.on('dragstart', () => this.stopFollow());
     map.on('resize', () => this.measure());
+    // the basemap asks for a few pattern images its sprite lacks (e.g. wood-pattern): fill them with a transparent pixel
+    map.on('styleimagemissing', (e) => {
+      if (!map.hasImage(e.id)) map.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
+    });
     map.on('error', (e) => {
       // a failed style download has no sourceId (tile errors do); fall back to a plain map
       if (!this.styleLoaded && this.basemap !== 'none' && !(e as { sourceId?: string }).sourceId) this.onBasemapError();
@@ -687,7 +691,7 @@ export class Engine {
       from: p.stations[0].name,
       to: p.stations[n - 1].name,
       speed: st.mode === 'run' ? `${Math.round(st.speed * 3.6)} km/h` : '0 km/h',
-      stock: STOCK[v.line.stock].label,
+      stock: consistFor(v.line.stock, v.line.id, v.id).label,
       tripId: tr.id,
       ug: this.net.isUnderground(p.shape, st.dist),
       stops,
@@ -727,7 +731,7 @@ export class Engine {
       from: p.stations[0].name,
       to: p.stations[p.stations.length - 1].name,
       speed: '–',
-      stock: STOCK[v.line.stock].label,
+      stock: consistFor(v.line.stock, v.line.id, v.id).label,
       tripId: ref.id,
       ug: false,
       stops: [],

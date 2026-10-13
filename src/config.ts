@@ -1,6 +1,7 @@
 /** App-wide settings. Data-specific values (lines, stations, times) come from public/data/lrt.json. */
 
-export type StockKey = 'u2' | 'flexity';
+/** high-floor cars (Siemens U2 / SD160) or low-floor trams (Flexity Freedom) */
+export type StockFamily = 'highfloor' | 'lowfloor';
 export type BasemapKey = 'light' | 'gray' | 'dark' | 'none';
 export type StyleMode = 'auto' | 'light' | 'gray' | 'dark';
 
@@ -15,8 +16,8 @@ export const GLYPHS = 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.p
 /** Edmonton city centre, used for the day/night switch and as a fallback map centre */
 export const CITY = { lon: -113.4938, lat: 53.5461 };
 
-/** Rolling stock drawn for each line (anything else gets the high-floor cars) */
-export const LINE_STOCK: Record<string, StockKey> = { capital: 'u2', metro: 'u2', valley: 'flexity' };
+/** Rolling stock family for each line (anything else gets the high-floor cars) */
+export const LINE_STOCK: Record<string, StockFamily> = { capital: 'highfloor', metro: 'highfloor', valley: 'lowfloor' };
 
 /**
  * Capital and Metro run in tunnel through downtown and under the university.

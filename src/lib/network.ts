@@ -1,5 +1,5 @@
 import type { FeatureCollection, LineString, Point } from 'geojson';
-import { LINE_OFFSET, LINE_STOCK, UNDERGROUND, type StockKey } from '../config';
+import { LINE_OFFSET, LINE_STOCK, UNDERGROUND, type StockFamily } from '../config';
 import type { LrtData } from '../types';
 import { LocalFrame, Path, type PathPoint } from './geo';
 
@@ -9,7 +9,7 @@ export interface Line {
   short: string;
   color: string;
   textColor: string;
-  stock: StockKey;
+  stock: StockFamily;
   order: number;
 }
 
@@ -89,7 +89,7 @@ export class Network {
       short: l.short,
       color: l.color,
       textColor: l.textColor,
-      stock: LINE_STOCK[l.id] ?? (/valley/i.test(l.id) ? 'flexity' : 'u2'),
+      stock: LINE_STOCK[l.id] ?? (/valley/i.test(l.id) ? 'lowfloor' : 'highfloor'),
       order: i,
     }));
     for (const l of this.lines) this.lineById.set(l.id, l);
