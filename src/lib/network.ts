@@ -1,5 +1,5 @@
 import type { FeatureCollection, LineString, Point } from 'geojson';
-import { LINE_OFFSET, LINE_STOCK, UNDERGROUND, type StockFamily } from '../config';
+import { LINE_OFFSET, LINE_STOCK, TUNNEL_SECTIONS, type StockFamily } from '../config';
 import type { LrtData } from '../types';
 import { LocalFrame, Path, type PathPoint } from './geo';
 
@@ -137,44 +137,53 @@ export class Network {
     this.markUnderground();
   }
 
-  /** underground stretches of each shape, worked out from the stations either side of each link */
+  /**
+   * Mark the real tunnel CORRIDORS, not whole stations or arbitrary half-links.
+   * Distances and underground state both come from this same shape, so dashed
+   * track lines and transparent train models agree in either travel direction.
+   */
   private markUnderground() {
-    const ugStation = (st: Station) => UNDERGROUND.stations.some((k) => nameIs(st.name, k));
+    // Some feed versions call Government Centre "Gov't Centre" or "Grandin".
+    const stationIs = (name: string, key: string) =>
+      nameIs(name, key) ||
+      (key === 'government' && /^(gov t|govt|grandin)/.test(norm(name))) ||
+      (key === 'macewan' && nameIs(name, 'mac ewan')) ||
+      (key === 'quarters' && nameIs(name, 'the quarters'));
+
     const ranges = new Map<Shape, [number, number][]>();
     for (const p of this.patterns) {
-      if (!UNDERGROUND.lines.includes(p.line.id)) continue;
       const list = ranges.get(p.shape) ?? [];
-      const n = p.stations.length;
-      if (ugStation(p.stations[0])) list.push([-1e9, p.dist[0]]);
-      if (ugStation(p.stations[n - 1])) list.push([p.dist[n - 1], 1e9]);
-      for (let k = 0; k < n - 1; k++) {
-        const A = p.stations[k];
-        const B = p.stations[k + 1];
-        const a = p.dist[k];
-        const b = p.dist[k + 1];
-        const len = b - a;
-        const ua = ugStation(A);
-        const ub = ugStation(B);
-        if (ua && ub) {
-          let open: [number, number] | null = null;
-          for (const [s1, s2, f1, f2] of UNDERGROUND.open) {
-            if (nameIs(A.name, s1) && nameIs(B.name, s2)) open = [f1, f2];
-            else if (nameIs(A.name, s2) && nameIs(B.name, s1)) open = [1 - f2, 1 - f1];
+      for (let k = 0; k < p.stations.length - 1; k++) {
+        const from = p.stations[k];
+        const to = p.stations[k + 1];
+        const start = p.dist[k];
+        const length = p.dist[k + 1] - start;
+        if (length <= 0) continue;
+
+        for (const section of TUNNEL_SECTIONS) {
+          if (!section.lines.includes(p.line.id)) continue;
+          const forward = stationIs(from.name, section.from) && stationIs(to.name, section.to);
+          const reverse = stationIs(from.name, section.to) && stationIs(to.name, section.from);
+          if (!forward && !reverse) continue;
+
+          for (const [a, b] of section.underground) {
+            // GTFS shapes follow the trip direction; reverse the fractions for return trips.
+            const f1 = forward ? a : 1 - b;
+            const f2 = forward ? b : 1 - a;
+            list.push([start + length * f1, start + length * f2]);
           }
-          if (open) list.push([a, a + open[0] * len], [a + open[1] * len, b]);
-          else list.push([a, b]);
-        } else if (ua) list.push([a, a + len * 0.5]);
-        else if (ub) list.push([a + len * 0.5, b]);
+        }
       }
-      ranges.set(p.shape, list);
+      if (list.length) ranges.set(p.shape, list);
     }
+
     for (const [shape, list] of ranges) {
-      list.sort((u, v) => u[0] - v[0]);
+      list.sort((a, b) => a[0] - b[0]);
       const merged: [number, number][] = [];
-      for (const r of list) {
+      for (const segment of list) {
         const last = merged[merged.length - 1];
-        if (last && r[0] <= last[1] + 1) last[1] = Math.max(last[1], r[1]);
-        else merged.push([r[0], r[1]]);
+        if (last && segment[0] <= last[1] + 1) last[1] = Math.max(last[1], segment[1]);
+        else merged.push([...segment]);
       }
       shape.ug = merged;
     }
@@ -237,7 +246,71 @@ export class Network {
         for (let k = 0; k < count; k++) covered.add(cellKey(xs[k], ys[k]));
       }
     }
-    return { type: 'FeatureCollection', features };
+    return { type: 'FeatureCollection', features: this.clipMetroSouth(features) };
+  }
+
+  /**
+   * GTFS route shapes may extend further south than Metro's passenger terminus.
+   * Clip only the RED MAP LINE at Health Sciences/Jubilee; keep the Capital track,
+   * Valley track, and all station/timetable data unchanged.
+   *
+   * Split a segment at the exact southern latitude rather than deleting vertices:
+   * otherwise the red line can finish north of the final station by one sample.
+   */
+  private clipMetroSouth(
+    features: FeatureCollection<LineString, { line: string; color: string; ug: boolean; off: number }>['features'],
+  ): typeof features {
+    const terminus = this.stations.find((s) => nameIs(s.name, 'health sciences'));
+    // If the feed uses a different name, retain its unmodified geometry.
+    if (!terminus) return features;
+
+    const cutoff = terminus.lat;
+    const result: typeof features = [];
+    for (const feature of features) {
+      if (feature.properties.line !== 'metro') {
+        result.push(feature);
+        continue;
+      }
+
+      const coords = feature.geometry.coordinates;
+      let run: number[][] = [];
+      const flush = () => {
+        if (run.length >= 2) {
+          result.push({
+            ...feature,
+            geometry: { type: 'LineString', coordinates: run },
+          });
+        }
+        run = [];
+      };
+
+      for (let k = 0; k < coords.length; k++) {
+        const b = coords[k];
+        const bInside = b[1] >= cutoff;
+        if (k === 0) {
+          if (bInside) run.push(b);
+          continue;
+        }
+        const a = coords[k - 1];
+        const aInside = a[1] >= cutoff;
+        if (aInside && bInside) {
+          if (!run.length) run.push(a);
+          run.push(b);
+        } else if (aInside !== bInside) {
+          const t = (cutoff - a[1]) / (b[1] - a[1]);
+          const crossing = [a[0] + (b[0] - a[0]) * t, cutoff];
+          if (aInside) {
+            if (!run.length) run.push(a);
+            run.push(crossing);
+            flush();
+          } else {
+            run = [crossing, b];
+          }
+        }
+      }
+      flush();
+    }
+    return result;
   }
 
   private pushRun(
