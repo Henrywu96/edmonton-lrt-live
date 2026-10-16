@@ -54,3 +54,11 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Trigger daily Vercel GTFS rebuild
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          VERCEL_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          curl --fail --show-error --silent \
+            --request POST "$VERCEL_HOOK"
